@@ -679,3 +679,37 @@ class KeywordProcessor(object):
                     new_sentence.append(current_word)
             idx += 1
         return "".join(new_sentence)
+
+    def get_close_keywords(self, len_1_word, max_cost=2, start_node=None):
+        assert max_cost < 3
+        start_node = start_node or self.keyword_trie_dict
+        word = str.lower(word)
+        row = range(len(word) + 1)
+
+        keywords = list()
+        for char, node in start_node.items():
+            for keyword, cost in self._levenshtein_rec(char, node, len_1_word, row, max_cost):
+                keywords.append((keyword, cost))
+
+        return keywords
+
+
+
+    def _levenshtein_rec(self, char, node, word, row, max_cost):
+        columns = len(word) + 1
+        new_row = [row[0] + 1]
+
+        for col in range(1, columns):
+            insert_cost = new_row[col - 1] + 1
+            delete_cost = row[col] + 1
+            replace_cost = row[col - 1] + int(word[col - 1] != char)
+            cost = min((insert_cost, delete_cost, replace_cost))
+            new_row.append(cost)
+
+        if new_row[-1] <= max_cost and self._keyword in node.keys():
+            yield node[self._keyword], cost
+
+        if min(new_row) <= max_cost and (self._keyword not in node.keys()):
+            for new_char, new_node in node.items():
+                for keyword, cost in self._levenshtein_rec(new_char, new_node, word, new_row, max_cost):
+                    yield keyword, cost
