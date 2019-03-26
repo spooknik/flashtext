@@ -447,7 +447,7 @@ class KeywordProcessor(object):
                     terms_present[key] = sub_values[key]
         return terms_present
 
-    def extract_keywords(self, sentence, span_info=False):
+    def extract_keywords(self, sentence, span_info=False, max_cost=0):
         """Searches in the string for all keywords present in corpus.
         Keywords present are added to a list `keywords_extracted` and returned.
 
@@ -479,6 +479,7 @@ class KeywordProcessor(object):
         reset_current_dict = False
         idx = 0
         sentence_len = len(sentence)
+        curr_cost = max_cost
         while idx < sentence_len:
             char = sentence[idx]
             # when we reach a character that might denote word end
@@ -509,6 +510,17 @@ class KeywordProcessor(object):
                                 is_longer_seq_found = True
                             if inner_char in current_dict_continued:
                                 current_dict_continued = current_dict_continued[inner_char]
+                            elif curr_cost:
+                                item = str.partition(sentence[idy - 1:], ' ')[0]
+                                closest_node, cost, depth = min(
+                                    self._correct_word(item, max_cost=curr_cost, start_node=current_dict_continued), 
+                                    key=lambda res: res[1],  # cost is at position 1 in the result
+                                    default=({}, 0, 0))
+                                curr_cost -= cost
+                                if closest_node:
+                                    current_dict_continued, idy = closest_node, idy + depth - 1 
+                                else:
+                                    break
                             else:
                                 break
                             idy += 1
@@ -524,6 +536,7 @@ class KeywordProcessor(object):
                     current_dict = self.keyword_trie_dict
                     if longest_sequence_found:
                         keywords_extracted.append((longest_sequence_found, sequence_start_pos, idx))
+                        curr_cost = max_cost
                     reset_current_dict = True
                 else:
                     # we reset current_dict
@@ -533,17 +546,29 @@ class KeywordProcessor(object):
                 # we can continue from this char
                 current_dict = current_dict[char]
             else:
-                # we reset current_dict
-                current_dict = self.keyword_trie_dict
-                reset_current_dict = True
-                # skip to end of word
-                idy = idx + 1
-                while idy < sentence_len:
-                    char = sentence[idy]
-                    if char not in self.non_word_boundaries:
-                        break
-                    idy += 1
+                if current_dict != self.keyword_trie_dict and curr_cost:
+                    item = str.partition(sentence[idx - 1:], ' ')[0]
+                    closest_node, cost, depth = min(
+                        self._correct_word(item, max_cost=curr_cost, start_node=current_dict), 
+                        key=lambda res: res[1],  # cost is at position 1 in the result
+                        default=({}, 0, 0))
+                    curr_cost -= cost
+                    if closest_node:
+                        current_dict, idy = closest_node, idx + depth - 1  # -1 because idx is incremented later on
+                    reset_current_dict = False
+                else:
+                    # we reset current_dict
+                    current_dict = self.keyword_trie_dict
+                    reset_current_dict = True
+                    # skip to end of word
+                    idy = idx + 1
+                    while idy < sentence_len:
+                        char = sentence[idy]
+                        if char not in self.non_word_boundaries:
+                            break
+                        idy += 1
                 idx = idy
+
             # if we are end of sentence and have a sequence discovered
             if idx + 1 >= sentence_len:
                 if self._keyword in current_dict:
@@ -680,7 +705,10 @@ class KeywordProcessor(object):
             idx += 1
         return "".join(new_sentence)
 
-    def get_close_keywords(self, len_1_word, max_cost=2, start_node=None):
+    def _correct_word(self, word, max_cost=2, start_node=None):
+        """
+        retrieve the first node where there is an exact match, with respect to max_cost levensthein distance
+        """
         assert max_cost < 3
         start_node = start_node or self.keyword_trie_dict
         word = str.lower(word)
@@ -688,14 +716,11 @@ class KeywordProcessor(object):
 
         keywords = list()
         for char, node in start_node.items():
-            for keyword, cost in self._levenshtein_rec(char, node, len_1_word, row, max_cost):
-                keywords.append((keyword, cost))
+            yield from self._levenshtein_rec(char, node, word, row, max_cost, depth=0)
 
         return keywords
 
-
-
-    def _levenshtein_rec(self, char, node, word, row, max_cost):
+    def _levenshtein_rec(self, char, node, word, row, max_cost, depth=0):
         columns = len(word) + 1
         new_row = [row[0] + 1]
 
@@ -706,10 +731,9 @@ class KeywordProcessor(object):
             cost = min((insert_cost, delete_cost, replace_cost))
             new_row.append(cost)
 
-        if new_row[-1] <= max_cost and self._keyword in node.keys():
-            yield node[self._keyword], cost
+        if new_row[-1] <= max_cost and word[depth] == char:
+            yield node, cost, depth
 
-        if min(new_row) <= max_cost and (self._keyword not in node.keys()):
+        elif min(new_row) <= max_cost and (self._keyword not in node.keys()):
             for new_char, new_node in node.items():
-                for keyword, cost in self._levenshtein_rec(new_char, new_node, word, new_row, max_cost):
-                    yield keyword, cost
+                yield from self._levenshtein_rec(new_char, new_node, word, new_row, max_cost, depth=depth + 1)
