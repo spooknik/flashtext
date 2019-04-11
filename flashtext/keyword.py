@@ -511,16 +511,17 @@ class KeywordProcessor(object):
                             if inner_char in current_dict_continued:
                                 current_dict_continued = current_dict_continued[inner_char]
                             elif curr_cost:
-                                item = str.partition(sentence[idy - 1:], ' ')[0]
-                                closest_node, cost, depth = min(
-                                    self._correct_word(item, max_cost=curr_cost, start_node=current_dict_continued), 
-                                    key=lambda res: res[1],  # cost is at position 1 in the result
-                                    default=({}, 0, 0))
+                                #import ipdb; ipdb.set_trace()
+                                end_of_word = self._partition(sentence[idy:])
+                                closest_node, cost, depth = next(
+                                    self._correct_word(end_of_word, max_cost=curr_cost, start_node=current_dict_continued), 
+                                    ({}, 0, 0)
+                                )
                                 curr_cost -= cost
                                 if closest_node:
-                                    current_dict_continued, idy = closest_node, idy + depth - 1 
+                                    current_dict_continued, idy = closest_node, idy + len(end_of_word) - 1 
                                 else:
-                                    break
+                                    break # TODO shift idy(idx)? if not found, because no exact match if no fuzzy match
                             else:
                                 break
                             idy += 1
@@ -547,22 +548,24 @@ class KeywordProcessor(object):
                 current_dict = current_dict[char]
             else:
                 if current_dict != self.keyword_trie_dict and curr_cost:
-                    item = str.partition(sentence[idx - 1:], ' ')[0]
-                    closest_node, cost, depth = min(
-                        self._correct_word(item, max_cost=curr_cost, start_node=current_dict), 
-                        key=lambda res: res[1],  # cost is at position 1 in the result
-                        default=({}, 0, 0))
-                    curr_cost -= cost
-                    if closest_node:
-                        current_dict, idy = closest_node, idx + depth - 1  # -1 because idx is incremented later on
+                    end_of_word = self._partition(sentence[idx:])
+                    closest_node, cost, depth = next(
+                        self._correct_word(end_of_word, max_cost=curr_cost, start_node=current_dict), 
+                        ({}, 0, 0)
+                    )
+                    if closest_node:  # if match found, decrease current cost, set current_dict
+                        curr_cost -= cost
+                        current_dict = closest_node
+                    #else:  # if no fuzzy match at this stage, then no fuzzy match possible at all
+                    #    curr_cost = 0
+                    idy = idx + len(end_of_word) - 1  # if no fuzzy match, then no exact match
                     reset_current_dict = False
                 else:
+                    idy = idx + 1
                     # we reset current_dict
                     current_dict = self.keyword_trie_dict
                     reset_current_dict = True
-                    # skip to end of word
-                    idy = idx + 1
-                    while idy < sentence_len:
+                    while idy < sentence_len:  # TODO : change self._partition to to do that
                         char = sentence[idy]
                         if char not in self.non_word_boundaries:
                             break
@@ -705,33 +708,38 @@ class KeywordProcessor(object):
             idx += 1
         return "".join(new_sentence)
 
+
+    def _partition(self, seq):
+        res = str()
+        for char in seq:
+            if char in self._white_space_chars:
+                break
+            res += char
+        return res
+
     def _correct_word(self, word, max_cost=2, start_node=None):
         """
         retrieve the first node where there is an exact match, with respect to max_cost levensthein distance
         """
-        assert max_cost < 3
         start_node = start_node or self.keyword_trie_dict
-        word = str.lower(word)
         row = range(len(word) + 1)
 
-        keywords = list()
         for char, node in start_node.items():
-            yield from self._levenshtein_rec(char, node, word, row, max_cost, depth=0)
+            yield from self._levenshtein_rec(char, node, word, row, max_cost, depth=1)
 
-        return keywords
 
     def _levenshtein_rec(self, char, node, word, row, max_cost, depth=0):
-        columns = len(word) + 1
+        n_columns = len(word) + 1
         new_row = [row[0] + 1]
 
-        for col in range(1, columns):
+        for col in range(1, n_columns):
             insert_cost = new_row[col - 1] + 1
             delete_cost = row[col] + 1
             replace_cost = row[col - 1] + int(word[col - 1] != char)
             cost = min((insert_cost, delete_cost, replace_cost))
             new_row.append(cost)
 
-        if new_row[-1] <= max_cost and word[depth] == char:
+        if new_row[-1] <= max_cost and (depth == n_columns or self._keyword in node.keys()):
             yield node, cost, depth
 
         elif min(new_row) <= max_cost and (self._keyword not in node.keys()):
